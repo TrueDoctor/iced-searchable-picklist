@@ -1,0 +1,17 @@
+[package]
+name = "iced_searchable_picklist"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dennis Kobert <dennis@kobert.dev>"]
+description = "A picklist widget that is searchable"
+license = "MIT"
+repository = "https://github.com/truedoctor/iced-searchable-picklist"
+readme = "README.md"
+keywords = ["gui", "graphics", "interface", "widgets", "iced"]
+categories = ["gui"]
+
+
+[dependencies]
+iced_core = {version = "0.5.0", default-features = false}
+iced_native = "0.5.1"
+iced_style = "0.4.0"
