@@ -40,6 +40,7 @@ where
     value: text_input::Value,
     on_change: Box<dyn Fn(String) -> Message>,
     on_submit: Option<Message>,
+    on_focus: Option<Message>,
 }
 
 /// The local state of a [`PickList`].
@@ -64,6 +65,25 @@ impl<T> State<T> {
             last_selection: Option::default(),
             text_input: text_input::State::default(),
         }
+    }
+
+    /// Focus the text_input of the [`PickList`].
+    pub fn focus(&mut self) {
+        self.text_input.focus();
+    }
+
+    /// Unfocus the text_input of the [`PickList`].
+    pub fn unfocus(&mut self) {
+        self.text_input.unfocus();
+        self.is_open = false;
+    }
+
+    /// Pick the specified element from the [`PickList`].
+    pub fn pick(&mut self, element: T) {
+        self.is_open = false;
+        self.last_selection = Some(element);
+
+        self.unfocus();
     }
 }
 
@@ -108,6 +128,7 @@ where
             value: Value::new(value),
             on_change: Box::new(on_change),
             on_submit: None,
+            on_focus: None,
         }
     }
 
@@ -115,6 +136,28 @@ where
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = Some(placeholder.into());
         self
+    }
+
+    /// Sets the on_submit Message of the [`PickList`].
+    pub fn on_submit(mut self, on_submit: Message) -> Self {
+        self.on_submit = Some(on_submit);
+        self
+    }
+
+    /// Sets the on_submit Message of the [`PickList`].
+    pub fn on_focus(mut self, on_focus: Message) -> Self {
+        self.on_focus = Some(on_focus);
+        self
+    }
+
+    /// Focus the text_input of the [`PickList`].
+    pub fn focus(&mut self) {
+        self.state.text_input.focus();
+    }
+
+    /// Unfocus the text_input of the [`PickList`].
+    pub fn unfocus(&mut self) {
+        self.state.text_input.unfocus();
     }
 
     /// Sets the width of the [`PickList`].
@@ -144,6 +187,15 @@ where
     /// Sets the style of the [`PickList`].
     pub fn style(mut self, style_sheet: impl Into<Box<dyn StyleSheet + 'a>>) -> Self {
         self.style_sheet = style_sheet.into();
+        self
+    }
+
+    /// Sets the text_style of the [`PickList`].
+    pub fn text_style(
+        mut self,
+        style_sheet: impl Into<Box<dyn text_input::StyleSheet + 'a>>,
+    ) -> Self {
+        self.text_style_sheet = style_sheet.into();
         self
     }
 }
@@ -226,6 +278,7 @@ pub fn update<'a, T, Message, Renderer>(
     font: &Renderer::Font,
     on_change: &dyn Fn(String) -> Message,
     on_submit: &Option<Message>,
+    on_focus: &Option<Message>,
 ) -> event::Status
 where
     T: PartialEq + Clone + 'a,
@@ -256,7 +309,9 @@ where
         | Event::Touch(touch::Event::FingerPressed { .. }) => {
             let event_status = if state.is_open {
                 // TODO: Encode cursor availability in the type system
-                state.is_open = cursor_position.x < 0.0 || cursor_position.y < 0.0;
+                if cursor_position.x >= 0.0 && cursor_position.y >= 0.0 {
+                    state.unfocus();
+                }
 
                 if layout.bounds().contains(cursor_position) {
                     propagate_event(&mut state.text_input);
@@ -266,10 +321,12 @@ where
             } else if layout.bounds().contains(cursor_position) {
                 state.is_open = true;
                 state.hovered_option = options.iter().position(|option| Some(option) == selected);
-                state.text_input.focus();
-                println!("focused window");
+                state.focus();
                 state.text_input.move_cursor_to_end();
                 propagate_event(&mut state.text_input);
+                if let Some(message) = on_focus.as_ref() {
+                    shell.publish(message.clone())
+                }
 
                 event::Status::Captured
             } else {
@@ -280,8 +337,7 @@ where
                 shell.publish((on_selected)(last_selection));
 
                 state.is_open = false;
-                state.text_input.unfocus();
-                println!("unfocused window");
+                state.unfocus();
 
                 event::Status::Captured
             } else {
@@ -506,7 +562,7 @@ where
             self.padding,
             self.text_size,
             &self.font,
-            self.placeholder.as_ref().map(String::as_str),
+            self.placeholder.as_deref(),
             &self.options,
         )
     }
@@ -536,6 +592,7 @@ where
             &self.font,
             &self.on_change,
             &self.on_submit,
+            &self.on_focus,
         )
     }
 
