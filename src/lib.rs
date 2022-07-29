@@ -309,12 +309,12 @@ where
         | Event::Touch(touch::Event::FingerPressed { .. }) => {
             let event_status = if state.is_open {
                 // TODO: Encode cursor availability in the type system
-                if cursor_position.x >= 0.0 && cursor_position.y >= 0.0 {
-                    state.unfocus();
-                }
-
                 if layout.bounds().contains(cursor_position) {
-                    propagate_event(&mut state.text_input);
+                    if cursor_position.x >= 0.0 && cursor_position.y >= 0.0 {
+                        state.unfocus();
+                    } else {
+                        propagate_event(&mut state.text_input);
+                    }
                 }
 
                 event::Status::Captured
