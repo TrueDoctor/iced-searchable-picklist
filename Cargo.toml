@@ -1,6 +1,6 @@
 [package]
 name = "iced_searchable_picklist"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 authors = ["Dennis Kobert <dennis@kobert.dev>"]
 description = "A picklist widget that is searchable"
@@ -12,6 +12,6 @@ categories = ["gui"]
 
 
 [dependencies]
-iced_core = {version = "0.5", default-features = false}
-iced_native = "0.5"
-iced_style = "0.4"
+iced_core = {version = "0.6", default-features = false}
+iced_native = "0.6"
+iced_style = "0.5"

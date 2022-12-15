@@ -11,22 +11,29 @@ use iced_native::overlay::menu::{self, Menu};
 use iced_native::renderer;
 use iced_native::text::{self, Text};
 use iced_native::touch;
-use iced_native::widget::text_input::{self, Value};
+use iced_native::widget::text_input::{self, Id, Value};
+use iced_native::widget::{container, operation, scrollable, tree, Tree};
 use iced_native::{
     Clipboard, Element, Layout, Length, Padding, Point, Rectangle, Shell, Size, Widget,
 };
 use std::borrow::Cow;
 
-pub use iced_style::pick_list::{Style, StyleSheet};
+pub use iced_style::pick_list::StyleSheet;
 
 /// A widget for selecting a single value from a list of options.
 #[allow(missing_debug_implementations)]
-pub struct PickList<'a, T, Message, Renderer: text::Renderer>
+pub struct PickList<'a, T: 'static, Message, Renderer: text::Renderer>
 where
     [T]: ToOwned<Owned = Vec<T>>,
     Message: Clone,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
-    state: &'a mut State<T>,
+    id: Option<Id>,
     on_selected: Box<dyn Fn(T) -> Message>,
     options: Cow<'a, [T]>,
     placeholder: Option<String>,
@@ -35,16 +42,17 @@ where
     padding: Padding,
     text_size: Option<u16>,
     font: Renderer::Font,
-    style_sheet: Box<dyn StyleSheet + 'a>,
-    text_style_sheet: Box<dyn text_input::StyleSheet + 'a>,
+    style_sheet: <Renderer::Theme as StyleSheet>::Style,
+    text_style_sheet: <Renderer::Theme as text_input::StyleSheet>::Style,
     value: text_input::Value,
     on_change: Box<dyn Fn(String) -> Message>,
     on_submit: Option<Message>,
+    on_paste: Option<Box<dyn Fn(String) -> Message>>,
     on_focus: Option<Message>,
 }
 
 /// The local state of a [`PickList`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct State<T> {
     menu: menu::State,
     keyboard_modifiers: keyboard::Modifiers,
@@ -87,6 +95,20 @@ impl<T> State<T> {
     }
 }
 
+impl<T> operation::Focusable for State<T> {
+    fn is_focused(&self) -> bool {
+        self.text_input.is_focused()
+    }
+
+    fn focus(&mut self) {
+        State::focus(self)
+    }
+
+    fn unfocus(&mut self) {
+        State::unfocus(self)
+    }
+}
+
 impl<T> Default for State<T> {
     fn default() -> Self {
         Self::new()
@@ -98,6 +120,12 @@ where
     T: ToString + Eq,
     [T]: ToOwned<Owned = Vec<T>>,
     Message: Clone,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     /// The default padding of a [`PickList`].
     pub const DEFAULT_PADDING: Padding = Padding::new(5);
@@ -106,7 +134,6 @@ where
     /// the current selected value, and the message to produce when an option is
     /// selected.
     pub fn new(
-        state: &'a mut State<T>,
         options: impl Into<Cow<'a, [T]>>,
         selected: Option<T>,
         on_selected: impl Fn(T) -> Message + 'static,
@@ -114,7 +141,7 @@ where
         value: &str,
     ) -> Self {
         Self {
-            state,
+            id: None,
             on_selected: Box::new(on_selected),
             options: options.into(),
             placeholder: None,
@@ -128,8 +155,15 @@ where
             value: Value::new(value),
             on_change: Box::new(on_change),
             on_submit: None,
+            on_paste: None,
             on_focus: None,
         }
+    }
+
+    /// Sets the [`Id`] of the [`TextInput`].
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = Some(id);
+        self
     }
 
     /// Sets the placeholder of the [`PickList`].
@@ -148,16 +182,6 @@ where
     pub fn on_focus(mut self, on_focus: Message) -> Self {
         self.on_focus = Some(on_focus);
         self
-    }
-
-    /// Focus the text_input of the [`PickList`].
-    pub fn focus(&mut self) {
-        self.state.text_input.focus();
-    }
-
-    /// Unfocus the text_input of the [`PickList`].
-    pub fn unfocus(&mut self) {
-        self.state.text_input.unfocus();
     }
 
     /// Sets the width of the [`PickList`].
@@ -185,17 +209,17 @@ where
     }
 
     /// Sets the style of the [`PickList`].
-    pub fn style(mut self, style_sheet: impl Into<Box<dyn StyleSheet + 'a>>) -> Self {
-        self.style_sheet = style_sheet.into();
+    pub fn style(mut self, style: impl Into<<Renderer::Theme as StyleSheet>::Style>) -> Self {
+        self.style_sheet = style.into();
         self
     }
 
-    /// Sets the text_style of the [`PickList`].
+    /// Sets the style of the [`PickList`].
     pub fn text_style(
         mut self,
-        style_sheet: impl Into<Box<dyn text_input::StyleSheet + 'a>>,
+        style: impl Into<<Renderer::Theme as text_input::StyleSheet>::Style>,
     ) -> Self {
-        self.text_style_sheet = style_sheet.into();
+        self.text_style_sheet = style.into();
         self
     }
 }
@@ -214,6 +238,12 @@ pub fn layout<Renderer, T>(
 where
     Renderer: text::Renderer,
     T: ToString,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     use std::f32;
 
@@ -277,6 +307,7 @@ pub fn update<'a, T, Message, Renderer>(
     size: Option<u16>,
     font: &Renderer::Font,
     on_change: &dyn Fn(String) -> Message,
+    on_paste: Option<&dyn Fn(String) -> Message>,
     on_submit: &Option<Message>,
     on_focus: &Option<Message>,
 ) -> event::Status
@@ -284,6 +315,12 @@ where
     T: PartialEq + Clone + 'a,
     Message: Clone,
     Renderer: text::Renderer,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     let state = state();
     let mut propagate_event = |state: &mut text_input::State| {
@@ -299,6 +336,7 @@ where
             font,
             false,
             on_change,
+            on_paste,
             on_submit,
             || state,
         )
@@ -419,12 +457,18 @@ pub fn overlay<'a, T, Message, Renderer>(
     text_size: Option<u16>,
     font: Renderer::Font,
     options: &'a [T],
-    style_sheet: &dyn StyleSheet,
+    style_sheet: <Renderer::Theme as StyleSheet>::Style,
 ) -> Option<overlay::Element<'a, Message, Renderer>>
 where
     Message: 'a,
     Renderer: text::Renderer + 'a,
     T: Clone + ToString,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     if state.is_open {
         let bounds = layout.bounds();
@@ -438,7 +482,7 @@ where
         .width(bounds.width.round() as u16)
         .padding(padding)
         .font(font)
-        .style(style_sheet.menu());
+        .style(style_sheet);
 
         if let Some(text_size) = text_size {
             menu = menu.text_size(text_size);
@@ -462,20 +506,27 @@ pub fn draw<T, Renderer>(
     font: &Renderer::Font,
     placeholder: Option<&str>,
     selected: Option<&T>,
-    style_sheet: &dyn StyleSheet,
-    text_style_sheet: &dyn text_input::StyleSheet,
+    style_sheet: &<Renderer::Theme as StyleSheet>::Style,
+    text_style_sheet: &<Renderer::Theme as text_input::StyleSheet>::Style,
+    theme: &Renderer::Theme,
 ) where
     Renderer: text::Renderer,
     T: ToString,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     let bounds = layout.bounds();
     let is_mouse_over = bounds.contains(cursor_position);
     let is_selected = selected.is_some();
 
     let style = if is_mouse_over {
-        style_sheet.hovered()
+        theme.hovered(style_sheet)
     } else {
-        style_sheet.active()
+        theme.active(style_sheet)
     };
 
     renderer.fill_quad(
@@ -507,6 +558,7 @@ pub fn draw<T, Renderer>(
     if state.text_input.is_focused() {
         text_input::draw(
             renderer,
+            theme,
             layout,
             cursor_position,
             &state.text_input,
@@ -524,9 +576,11 @@ pub fn draw<T, Renderer>(
             content: label,
             size: text_size,
             font: font.clone(),
-            color: is_selected
-                .then(|| style.text_color)
-                .unwrap_or(style.placeholder_color),
+            color: if is_selected {
+                style.text_color
+            } else {
+                style.placeholder_color
+            },
             bounds: Rectangle {
                 x: bounds.x + f32::from(padding.left),
                 y: bounds.center_y() - text_size / 2.0,
@@ -539,13 +593,28 @@ pub fn draw<T, Renderer>(
     }
 }
 
-impl<'a, T: 'a, Message, Renderer> Widget<Message, Renderer> for PickList<'a, T, Message, Renderer>
+impl<'a, T: 'static, Message, Renderer> Widget<Message, Renderer>
+    for PickList<'a, T, Message, Renderer>
 where
     T: Clone + ToString + Eq,
     [T]: ToOwned<Owned = Vec<T>>,
     Message: 'static + Clone,
     Renderer: text::Renderer + 'a,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<State<T>>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(State::<T>::new())
+    }
+
     fn width(&self) -> Length {
         self.width
     }
@@ -569,6 +638,7 @@ where
 
     fn on_event(
         &mut self,
+        tree: &mut Tree,
         event: Event,
         layout: Layout<'_>,
         cursor_position: Point,
@@ -584,13 +654,14 @@ where
             self.on_selected.as_ref(),
             self.selected.as_ref(),
             &self.options,
-            || &mut self.state,
+            || tree.state.downcast_mut::<State<T>>(),
             renderer,
             clipboard,
             &mut self.value,
             self.text_size,
             &self.font,
             &self.on_change,
+            self.on_paste.as_deref(),
             &self.on_submit,
             &self.on_focus,
         )
@@ -598,6 +669,7 @@ where
 
     fn mouse_interaction(
         &self,
+        _state: &Tree,
         layout: Layout<'_>,
         cursor_position: Point,
         _viewport: &Rectangle,
@@ -608,7 +680,9 @@ where
 
     fn draw(
         &self,
+        tree: &Tree,
         renderer: &mut Renderer,
+        theme: &Renderer::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         cursor_position: Point,
@@ -618,42 +692,51 @@ where
             renderer,
             layout,
             cursor_position,
-            self.state,
+            tree.state.downcast_ref::<State<T>>(),
             &self.value,
             self.padding,
             self.text_size,
             &self.font,
             self.placeholder.as_deref(),
             self.selected.as_ref(),
-            self.style_sheet.as_ref(),
-            self.text_style_sheet.as_ref(),
+            &self.style_sheet,
+            &self.text_style_sheet,
+            theme,
         )
     }
 
-    fn overlay(
-        &mut self,
+    fn overlay<'b>(
+        &'b self,
+        tree: &'b mut Tree,
         layout: Layout<'_>,
         _renderer: &Renderer,
     ) -> Option<overlay::Element<'_, Message, Renderer>> {
+        let state = tree.state.downcast_mut::<State<T>>();
         overlay(
             layout,
-            self.state,
+            state,
             self.padding,
             self.text_size,
             self.font.clone(),
             &self.options,
-            self.style_sheet.as_ref(),
+            self.style_sheet.clone(),
         )
     }
 }
 
-impl<'a, T: 'a, Message, Renderer> From<PickList<'a, T, Message, Renderer>>
+impl<'a, T: 'static, Message, Renderer> From<PickList<'a, T, Message, Renderer>>
     for Element<'a, Message, Renderer>
 where
     T: Clone + ToString + Eq,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: text::Renderer + 'a,
     Message: 'static + Clone,
+    Renderer::Theme: StyleSheet
+        + scrollable::StyleSheet
+        + menu::StyleSheet
+        + container::StyleSheet
+        + text_input::StyleSheet,
+    <Renderer::Theme as menu::StyleSheet>::Style: From<<Renderer::Theme as StyleSheet>::Style>,
 {
     fn from(val: PickList<'a, T, Message, Renderer>) -> Self {
         Element::new(val)
